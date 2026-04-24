@@ -1,0 +1,1292 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GestureAR Studio — Phase 1</title>
+
+    <!-- MediaPipe Hands -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <!-- Three.js (UMD build, có đầy đủ iridescence + physical material) -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.150.1/build/three.min.js"></script>
+
+    <style>
+        :root {
+            --primary: #6366f1;
+            --accent:  #a78bfa;
+            --bg:      #0a0a12;
+            --glass-border: rgba(255,255,255,0.75);
+            --snap-ring: #6366f1;
+        }
+
+        *, *::before, *::after { box-sizing: border-box; }
+
+        body, html {
+            margin: 0; padding: 0;
+            width: 100%; height: 100%;
+            background: var(--bg);
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        #loading {
+            position: fixed;
+            inset: 0;
+            background: var(--bg);
+            z-index: 100;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: #fff;
+            gap: 16px;
+            transition: opacity 0.6s ease;
+        }
+        #loading.hidden { opacity: 0; pointer-events: none; }
+
+        .spinner {
+            width: 52px; height: 52px;
+            border: 4px solid rgba(255,255,255,0.08);
+            border-top-color: var(--primary);
+            border-radius: 50%;
+            animation: spin 0.9s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        #loading h2 {
+            margin: 0;
+            font-size: 1.1rem;
+            font-weight: 400;
+            letter-spacing: 0.08em;
+            color: rgba(255,255,255,0.7);
+        }
+
+        #error-screen {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: var(--bg);
+            z-index: 100;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: #fff;
+            gap: 12px;
+            text-align: center;
+            padding: 32px;
+        }
+        #error-screen.visible { display: flex; }
+        #error-screen .icon { font-size: 3rem; }
+        #error-screen h2 { margin: 0; font-size: 1.3rem; color: #f87171; }
+        #error-screen p { margin: 0; color: rgba(255,255,255,0.5); font-size: 0.9rem; max-width: 340px; }
+
+        .video-container {
+            position: relative;
+            width: 100vw; height: 100vh;
+        }
+        .input_video { display: none; }
+
+        /* 2D canvas (camera + gesture overlay) */
+        .output_canvas {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1);
+            cursor: pointer;
+        }
+
+        /* 3D Three.js canvas — nằm ĐÈ LÊN output_canvas 
+        .three_canvas {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1);
+            pointer-events: none;  /* click xuyên qua đến output_canvas */
+        
+
+        #hud {
+            position: fixed;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 12px;
+            z-index: 10;
+            transition: opacity 0.5s;
+        }
+        #hud.hidden { opacity: 0; pointer-events: none; }
+
+        .gesture-card {
+            background: rgba(255,255,255,0.06);
+            border: 1px solid rgba(255,255,255,0.12);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border-radius: 12px;
+            padding: 10px 14px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: rgba(255,255,255,0.8);
+            font-size: 0.78rem;
+            white-space: nowrap;
+        }
+        .gesture-card .emoji { font-size: 1.3rem; }
+        .gesture-card .label { line-height: 1.3; }
+        .gesture-card .label b { display: block; font-size: 0.85rem; color: #fff; font-weight: 600; }
+
+        #gesture-tag {
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(99, 102, 241, 0.25);
+            border: 1px solid rgba(99, 102, 241, 0.5);
+            backdrop-filter: blur(8px);
+            color: #fff;
+            padding: 5px 16px;
+            border-radius: 99px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            letter-spacing: 0.06em;
+            z-index: 10;
+            opacity: 0;
+            transition: opacity 0.25s;
+        }
+        #gesture-tag.visible { opacity: 1; }
+
+        #clear-hint {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            color: rgba(255,255,255,0.35);
+            font-size: 0.72rem;
+            z-index: 10;
+            letter-spacing: 0.05em;
+            line-height: 1.7;
+            text-align: right;
+        }
+
+        #save-toast {
+            position: fixed;
+            bottom: 90px;
+            left: 50%;
+            transform: translateX(-50%) translateY(10px);
+            background: rgba(34, 197, 94, 0.2);
+            border: 1px solid rgba(34, 197, 94, 0.5);
+            backdrop-filter: blur(8px);
+            color: #86efac;
+            padding: 8px 20px;
+            border-radius: 99px;
+            font-size: 0.82rem;
+            font-weight: 600;
+            letter-spacing: 0.05em;
+            z-index: 20;
+            opacity: 0;
+            transition: opacity 0.2s, transform 0.2s;
+            pointer-events: none;
+        }
+        #save-toast.visible {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+        }
+
+        /* ================================================================= */
+        /* PHASE 2 — AI Style Transfer UI                                    */
+        /* ================================================================= */
+
+        #style-panel {
+            position: fixed;
+            bottom: 100px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+            z-index: 15;
+            transition: opacity 0.3s, transform 0.3s;
+        }
+        #style-panel.visible { display: flex; }
+        #style-panel.hiding {
+            opacity: 0;
+            transform: translateX(-50%) translateY(10px);
+            pointer-events: none;
+        }
+
+        .style-panel-title {
+            color: rgba(255,255,255,0.85);
+            font-size: 0.72rem;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            margin-bottom: 2px;
+        }
+
+        .style-chips {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            justify-content: center;
+            max-width: 760px;
+            padding: 0 20px;
+        }
+
+        .style-chip {
+            background: rgba(255,255,255,0.06);
+            border: 1px solid rgba(255,255,255,0.15);
+            backdrop-filter: blur(14px);
+            -webkit-backdrop-filter: blur(14px);
+            border-radius: 24px;
+            padding: 9px 16px;
+            color: #fff;
+            font-size: 0.8rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: transform 0.15s, background 0.2s, border-color 0.2s;
+            user-select: none;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            white-space: nowrap;
+        }
+        .style-chip:hover {
+            background: rgba(99,102,241,0.28);
+            border-color: rgba(139,92,246,0.6);
+            transform: translateY(-2px);
+        }
+        .style-chip:active { transform: translateY(0); }
+        .style-chip .emoji { font-size: 1rem; }
+
+        /* AI loading overlay */
+        #ai-loading {
+            position: fixed;
+            inset: 0;
+            background: rgba(10,10,18,0.72);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            z-index: 50;
+            display: none;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            gap: 22px;
+            color: #fff;
+        }
+        #ai-loading.visible { display: flex; }
+
+        #ai-loading .ring {
+            width: 70px; height: 70px;
+            border: 3px solid rgba(255,255,255,0.08);
+            border-top-color:   #a78bfa;
+            border-right-color: #ec4899;
+            border-radius: 50%;
+            animation: spin 1.1s linear infinite;
+        }
+
+        #ai-loading .label {
+            font-size: 1rem;
+            font-weight: 500;
+            letter-spacing: 0.06em;
+            text-align: center;
+        }
+        #ai-loading .sublabel {
+            font-size: 0.78rem;
+            color: rgba(255,255,255,0.45);
+            text-align: center;
+            margin-top: 4px;
+        }
+
+        /* Result controls (sau khi AI xong) */
+        #result-controls {
+            position: fixed;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: none;
+            gap: 10px;
+            z-index: 15;
+        }
+        #result-controls.visible { display: flex; }
+
+        .result-btn {
+            background: rgba(255,255,255,0.07);
+            border: 1px solid rgba(255,255,255,0.15);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border-radius: 12px;
+            padding: 10px 18px;
+            color: #fff;
+            font-size: 0.84rem;
+            font-weight: 500;
+            cursor: pointer;
+            font-family: inherit;
+            transition: all 0.2s;
+        }
+        .result-btn:hover {
+            background: rgba(99,102,241,0.28);
+            border-color: rgba(139,92,246,0.55);
+        }
+        .result-btn.primary {
+            background: rgba(99,102,241,0.42);
+            border-color: rgba(139,92,246,0.75);
+        }
+        .result-btn.primary:hover {
+            background: rgba(99,102,241,0.55);
+        }
+
+        /* Error toast */
+        #error-toast {
+            position: fixed;
+            top: 70px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(239,68,68,0.18);
+            border: 1px solid rgba(239,68,68,0.5);
+            backdrop-filter: blur(8px);
+            color: #fca5a5;
+            padding: 10px 20px;
+            border-radius: 12px;
+            font-size: 0.82rem;
+            z-index: 60;
+            display: none;
+            max-width: 460px;
+            text-align: center;
+            line-height: 1.45;
+        }
+        #error-toast.visible { display: block; }
+
+        /* Tag style cho phong cách đang dùng */
+        #active-style-tag {
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(139,92,246,0.22);
+            border: 1px solid rgba(139,92,246,0.5);
+            backdrop-filter: blur(8px);
+            color: #e9d5ff;
+            padding: 5px 16px;
+            border-radius: 99px;
+            font-size: 0.78rem;
+            font-weight: 600;
+            letter-spacing: 0.06em;
+            z-index: 10;
+            display: none;
+        }
+        #active-style-tag.visible { display: block; }
+    </style>
+</head>
+<body>
+
+<div id="loading">
+    <div class="spinner"></div>
+    <h2>Khởi động nhận diện tay...</h2>
+</div>
+
+<div id="error-screen">
+    <div class="icon">📷</div>
+    <h2>Không thể truy cập Camera</h2>
+    <p>Vui lòng cho phép truy cập camera trong cài đặt trình duyệt rồi tải lại trang.</p>
+</div>
+
+<div class="video-container">
+    <video class="input_video" autoplay playsinline></video>
+    <canvas class="output_canvas" width="1280" height="720"></canvas>
+    <canvas class="three_canvas"  width="1280" height="720"></canvas>
+</div>
+
+<div id="hud">
+    <div class="gesture-card">
+        <span class="emoji">🖖</span>
+        <span class="label"><b>Tam giác</b>→ Pha lê 3D xoay</span>
+    </div>
+    <div class="gesture-card">
+        <span class="emoji">👆</span>
+        <span class="label"><b>L-Frame</b>→ Khối lập phương 3D</span>
+    </div>
+    <div class="gesture-card">
+        <span class="emoji">🤙</span>
+        <span class="label"><b>Vòng tròn</b>→ Cầu hạt phát sáng</span>
+    </div>
+</div>
+
+<div id="gesture-tag"></div>
+<div id="active-style-tag"></div>
+<div id="save-toast">✓ Đã lưu ảnh!</div>
+<div id="clear-hint">Giữ tay 2s → AI sáng tác<br>[Space] chụp · Nhấn để xóa</div>
+
+<!-- PHASE 2: Panel chọn phong cách AI -->
+<div id="style-panel">
+    <div class="style-panel-title">🎨 Chọn phong cách AI</div>
+    <div class="style-chips">
+        <div class="style-chip" data-style="van-gogh">   <span class="emoji">🌻</span> Van Gogh</div>
+        <div class="style-chip" data-style="anime">      <span class="emoji">🌸</span> Anime</div>
+        <div class="style-chip" data-style="cyberpunk">  <span class="emoji">🌃</span> Cyberpunk</div>
+        <div class="style-chip" data-style="watercolor"> <span class="emoji">💧</span> Màu nước</div>
+        <div class="style-chip" data-style="oil">        <span class="emoji">🖼️</span> Sơn dầu</div>
+        <div class="style-chip" data-style="sketch">     <span class="emoji">✏️</span> Phác thảo</div>
+        <div class="style-chip" data-style="pixel-art">  <span class="emoji">👾</span> Pixel art</div>
+        <div class="style-chip" data-style="ink-wash">   <span class="emoji">🎋</span> Thủy mặc</div>
+    </div>
+</div>
+
+<!-- Loading overlay trong lúc AI xử lý -->
+<div id="ai-loading">
+    <div class="ring"></div>
+    <div>
+        <div class="label">AI đang sáng tác...</div>
+        <div class="sublabel">Quá trình này mất 15–30 giây</div>
+    </div>
+</div>
+
+<!-- Nút điều khiển sau khi có kết quả -->
+<div id="result-controls">
+    <button class="result-btn"         id="btn-try-another">🔄 Đổi phong cách</button>
+    <button class="result-btn primary" id="btn-save-result">💾 Lưu ảnh</button>
+    <button class="result-btn"         id="btn-clear-result">✕ Xóa</button>
+</div>
+
+<!-- Toast báo lỗi -->
+<div id="error-toast"></div>
+
+<script>
+    // =====================================================================
+    // DOM references
+    // =====================================================================
+    const videoEl      = document.querySelector('.input_video');
+    const canvasEl     = document.querySelector('.output_canvas');
+    const threeCanvas  = document.querySelector('.three_canvas');
+    const ctx          = canvasEl.getContext('2d');
+    const loadingEl    = document.getElementById('loading');
+    const errorEl      = document.getElementById('error-screen');
+    const hudEl        = document.getElementById('hud');
+    const gestureTagEl = document.getElementById('gesture-tag');
+    const saveToastEl  = document.getElementById('save-toast');
+
+    // Phase 2 elements
+    const stylePanelEl    = document.getElementById('style-panel');
+    const aiLoadingEl     = document.getElementById('ai-loading');
+    const resultControls  = document.getElementById('result-controls');
+    const errorToastEl    = document.getElementById('error-toast');
+    const activeStyleTag  = document.getElementById('active-style-tag');
+
+    const frozenCanvas = document.createElement('canvas');
+    const frozenCtx    = frozenCanvas.getContext('2d');
+
+    // =====================================================================
+    // State
+    // =====================================================================
+    let frozenGlass  = null;
+    let activeGlass  = null;
+    let snapTimer    = 0;
+    let lastPos      = null;
+    let isCooldown   = false;
+    let flashFrames  = 0;
+    let lastGesture  = null;
+
+    // Phase 2 state
+    let stylizedImage    = null;   // Image object của ảnh AI đã xong
+    let stylizedImageUrl = null;
+    let isStylizing      = false;
+    let errorToastTimer  = null;
+
+    const SNAP_DELAY          = 2000;
+    const STABILITY_THRESHOLD = 80;
+
+    const STYLE_LABELS = {
+        'van-gogh':   '🌻 Van Gogh',
+        'anime':      '🌸 Anime',
+        'cyberpunk':  '🌃 Cyberpunk',
+        'watercolor': '💧 Màu nước',
+        'oil':        '🖼️ Sơn dầu',
+        'sketch':     '✏️ Phác thảo',
+        'pixel-art':  '👾 Pixel art',
+        'ink-wash':   '🎋 Thủy mặc',
+    };
+
+    // =====================================================================
+    // THREE.JS LAYER — Object 3D thật render đè lên canvas 2D
+    // =====================================================================
+    let scene, threeCamera, renderer;
+    let crystalObj, cubeObj, particleObj;
+    const threeClock = { start: performance.now(), t: () => (performance.now() - threeClock.start) / 1000 };
+
+    function initThree() {
+        scene = new THREE.Scene();
+
+        const w = canvasEl.width || 1280;
+        const h = canvasEl.height || 720;
+
+        // Orthographic camera: tọa độ world 1:1 với pixel canvas
+        threeCamera = new THREE.OrthographicCamera(-w/2, w/2, h/2, -h/2, -2000, 2000);
+        threeCamera.position.z = 500;
+
+        renderer = new THREE.WebGLRenderer({
+            canvas:     threeCanvas,
+            alpha:      true,
+            antialias:  true,
+        });
+        renderer.setSize(w, h, false);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x000000, 0);
+
+        // ---------- Ánh sáng: tạo hiệu ứng iridescent ----------
+        scene.add(new THREE.AmbientLight(0x404060, 0.6));
+
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
+        dirLight.position.set(200, 300, 500);
+        scene.add(dirLight);
+
+        const purpleLight = new THREE.PointLight(0x8b5cf6, 2.0, 2000);
+        purpleLight.position.set(-400, 200, 300);
+        scene.add(purpleLight);
+
+        const cyanLight = new THREE.PointLight(0x06b6d4, 2.0, 2000);
+        cyanLight.position.set(400, -200, 300);
+        scene.add(cyanLight);
+
+        const pinkLight = new THREE.PointLight(0xec4899, 1.5, 2000);
+        pinkLight.position.set(0, -300, 400);
+        scene.add(pinkLight);
+
+        // ---------- 1. PHA LÊ (gesture Tam giác) ----------
+        const crystalGeo = new THREE.IcosahedronGeometry(1, 0);   // 20 mặt, kim cương-like
+        const crystalMat = new THREE.MeshPhysicalMaterial({
+            color:              0xffffff,
+            metalness:          0.2,
+            roughness:          0.05,
+            transmission:       0.85,    // trong suốt kiểu kính
+            thickness:          2.0,
+            ior:                2.4,     // chiết suất của kim cương
+            clearcoat:          1.0,
+            clearcoatRoughness: 0.05,
+            iridescence:        1.0,     // lấp lánh cầu vồng
+            iridescenceIOR:     1.5,
+        });
+        crystalObj = new THREE.Mesh(crystalGeo, crystalMat);
+        crystalObj.visible = false;
+        scene.add(crystalObj);
+
+        // ---------- 2. KHỐI LẬP PHƯƠNG (gesture L-Frame) ----------
+        const cubeGroup = new THREE.Group();
+
+        //   (a) Wireframe phát sáng
+        const cubeEdges = new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1));
+        const cubeLines = new THREE.LineSegments(
+            cubeEdges,
+            new THREE.LineBasicMaterial({ color: 0xa78bfa, linewidth: 2 })
+        );
+        cubeGroup.add(cubeLines);
+
+        //   (b) Khối trong suốt bên trong
+        const cubeInner = new THREE.Mesh(
+            new THREE.BoxGeometry(0.95, 0.95, 0.95),
+            new THREE.MeshPhysicalMaterial({
+                color:        0x6366f1,
+                transparent:  true,
+                opacity:      0.25,
+                transmission: 0.7,
+                roughness:    0.15,
+                clearcoat:    1.0,
+            })
+        );
+        cubeGroup.add(cubeInner);
+
+        cubeObj = cubeGroup;
+        cubeObj.visible = false;
+        scene.add(cubeObj);
+
+        // ---------- 3. CẦU HẠT PHÁT SÁNG (gesture Vòng tròn) ----------
+        const particleCount = 400;
+        const positions = new Float32Array(particleCount * 3);
+        const colors    = new Float32Array(particleCount * 3);
+
+        for (let i = 0; i < particleCount; i++) {
+            // Phân phối đều trên mặt cầu
+            const theta = Math.random() * Math.PI * 2;
+            const phi   = Math.acos(2 * Math.random() - 1);
+            const r     = 0.9 + Math.random() * 0.2;
+
+            positions[i*3  ] = r * Math.sin(phi) * Math.cos(theta);
+            positions[i*3+1] = r * Math.sin(phi) * Math.sin(theta);
+            positions[i*3+2] = r * Math.cos(phi);
+
+            // Màu: gradient tím - hồng - xanh
+            const hue = Math.random();
+            if (hue < 0.33)      { colors[i*3]=0.67; colors[i*3+1]=0.36; colors[i*3+2]=0.98; } // tím
+            else if (hue < 0.66) { colors[i*3]=0.93; colors[i*3+1]=0.28; colors[i*3+2]=0.60; } // hồng
+            else                 { colors[i*3]=0.02; colors[i*3+1]=0.71; colors[i*3+2]=0.83; } // cyan
+        }
+
+        const particleGeo = new THREE.BufferGeometry();
+        particleGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        particleGeo.setAttribute('color',    new THREE.BufferAttribute(colors, 3));
+
+        const particleMat = new THREE.PointsMaterial({
+            size:          5,
+            transparent:   true,
+            opacity:       0.9,
+            vertexColors:  true,
+            blending:      THREE.AdditiveBlending,
+            depthWrite:    false,
+        });
+        particleObj = new THREE.Points(particleGeo, particleMat);
+        particleObj.visible = false;
+        scene.add(particleObj);
+    }
+
+    function updateThreeGlass(glass, isFrozen) {
+        // Ẩn tất cả
+        if (crystalObj)  crystalObj.visible  = false;
+        if (cubeObj)     cubeObj.visible     = false;
+        if (particleObj) particleObj.visible = false;
+
+        if (!glass || !scene) return;
+
+        const w = canvasEl.width;
+        const h = canvasEl.height;
+
+        // Đổi tọa độ pixel → world (orthographic 1:1)
+        const wx = glass.cx - w/2;
+        const wy = h/2 - glass.cy;   // lật Y
+
+        const t = threeClock.t();
+
+        if (glass.type === 'triangle') {
+            // Kích thước = khoảng cách max từ centroid đến đỉnh
+            const size = Math.max(
+                Math.hypot(glass.p1.x - glass.cx, glass.p1.y - glass.cy),
+                Math.hypot(glass.p2.x - glass.cx, glass.p2.y - glass.cy),
+                Math.hypot(glass.p3.x - glass.cx, glass.p3.y - glass.cy)
+            ) * 0.55;
+
+            crystalObj.position.set(wx, wy, 100);
+            crystalObj.scale.set(size, size, size);
+
+            if (!isFrozen) {
+                crystalObj.rotation.x = t * 0.6;
+                crystalObj.rotation.y = t * 0.9;
+            }
+            crystalObj.visible = true;
+        }
+        else if (glass.type === 'quad') {
+            const dx = glass.br.x - glass.tl.x;
+            const dy = glass.br.y - glass.tl.y;
+            const size = Math.hypot(dx, dy) * 0.28;
+
+            cubeObj.position.set(wx, wy, 100);
+            cubeObj.scale.set(size, size, size);
+
+            if (!isFrozen) {
+                cubeObj.rotation.x = t * 0.5;
+                cubeObj.rotation.y = t * 0.7;
+                cubeObj.rotation.z = t * 0.25;
+            }
+            cubeObj.visible = true;
+        }
+        else if (glass.type === 'circle') {
+            const size = (glass.rx + glass.ry) * 0.45;
+
+            particleObj.position.set(wx, wy, 100);
+            particleObj.scale.set(size, size, size);
+
+            if (!isFrozen) {
+                particleObj.rotation.y = t * 0.6;
+                particleObj.rotation.x = t * 0.4;
+                particleObj.rotation.z = t * 0.2;
+            }
+            particleObj.visible = true;
+        }
+    }
+
+    function renderThreeLayer() {
+        if (!renderer || !scene || !threeCamera) return;
+
+        const w = canvasEl.width;
+        const h = canvasEl.height;
+
+        // Đồng bộ size của three canvas với output_canvas
+        if (threeCanvas.width !== w || threeCanvas.height !== h) {
+            threeCamera.left   = -w/2;
+            threeCamera.right  =  w/2;
+            threeCamera.top    =  h/2;
+            threeCamera.bottom = -h/2;
+            threeCamera.updateProjectionMatrix();
+            renderer.setSize(w, h, false);
+        }
+
+        renderer.render(scene, threeCamera);
+    }
+
+    function clearThreeLayer() {
+        if (renderer) renderer.clear();
+    }
+
+    // =====================================================================
+    // PHASE 2 — AI Style Transfer
+    // =====================================================================
+
+    function showStylePanel() {
+        stylePanelEl.classList.remove('hiding');
+        stylePanelEl.classList.add('visible');
+    }
+
+    function hideStylePanel() {
+        stylePanelEl.classList.add('hiding');
+        setTimeout(() => stylePanelEl.classList.remove('visible', 'hiding'), 300);
+    }
+
+    function showError(message) {
+        errorToastEl.textContent = '⚠️ ' + message;
+        errorToastEl.classList.add('visible');
+        clearTimeout(errorToastTimer);
+        errorToastTimer = setTimeout(() => errorToastEl.classList.remove('visible'), 6000);
+    }
+
+    function resetAll() {
+        if (isStylizing) return;            // không cho reset khi AI đang chạy
+        frozenGlass      = null;
+        stylizedImage    = null;
+        stylizedImageUrl = null;
+        hideStylePanel();
+        aiLoadingEl.classList.remove('visible');
+        resultControls.classList.remove('visible');
+        activeStyleTag.classList.remove('visible');
+        hudEl.classList.remove('hidden');
+    }
+
+    // Gộp 2D canvas + 3D canvas thành 1 ảnh base64 gửi lên AI
+    function captureMergedFrame() {
+        const merge = document.createElement('canvas');
+        merge.width  = canvasEl.width;
+        merge.height = canvasEl.height;
+        const mctx = merge.getContext('2d');
+        mctx.drawImage(canvasEl,    0, 0);
+        mctx.drawImage(threeCanvas, 0, 0);
+        return merge.toDataURL('image/jpeg', 0.88);
+    }
+
+    async function stylizeWithStyle(style) {
+        if (isStylizing || !frozenGlass) return;
+        isStylizing = true;
+
+        hideStylePanel();
+        aiLoadingEl.classList.add('visible');
+
+        try {
+            const imageBase64 = captureMergedFrame();
+
+            const res = await fetch('/api/stylize', {
+                method:  'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body:    JSON.stringify({ imageBase64, style }),
+            });
+
+            const data = await res.json().catch(() => ({}));
+
+            if (!res.ok) {
+                throw new Error(data.error || `HTTP ${res.status}`);
+            }
+            if (!data.imageUrl) {
+                throw new Error('Không có ảnh kết quả trả về');
+            }
+
+            // Load ảnh kết quả
+            const img = new Image();
+            img.crossOrigin = 'anonymous';
+            await new Promise((resolve, reject) => {
+                img.onload  = resolve;
+                img.onerror = () => reject(new Error('Không load được ảnh kết quả'));
+                img.src = data.imageUrl;
+            });
+
+            stylizedImage    = img;
+            stylizedImageUrl = data.imageUrl;
+
+            aiLoadingEl.classList.remove('visible');
+            resultControls.classList.add('visible');
+            activeStyleTag.textContent = STYLE_LABELS[style] || style;
+            activeStyleTag.classList.add('visible');
+
+        } catch (err) {
+            console.error('Stylize error:', err);
+            aiLoadingEl.classList.remove('visible');
+
+            // Phát hiện 1 số lỗi phổ biến để báo thân thiện
+            const msg = String(err.message || err);
+            if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('<!DOCTYPE')) {
+                showError('Không kết nối được backend. Cần chạy "vercel dev" thay vì server tĩnh, hoặc deploy lên Vercel.');
+            } else if (msg.includes('REPLICATE_API_TOKEN')) {
+                showError('Server chưa cấu hình API token. Xem README.md — phần Setup.');
+            } else {
+                showError(msg);
+            }
+
+            showStylePanel();
+        }
+
+        isStylizing = false;
+    }
+
+    // Bind style chip clicks
+    document.querySelectorAll('.style-chip').forEach(chip => {
+        chip.addEventListener('click', () => {
+            const style = chip.dataset.style;
+            stylizeWithStyle(style);
+        });
+    });
+
+    // Result control buttons
+    document.getElementById('btn-try-another').addEventListener('click', () => {
+        if (isStylizing) return;
+        stylizedImage    = null;
+        stylizedImageUrl = null;
+        resultControls.classList.remove('visible');
+        activeStyleTag.classList.remove('visible');
+        showStylePanel();
+    });
+
+    document.getElementById('btn-save-result').addEventListener('click', () => {
+        if (!stylizedImage) return;
+        const save = document.createElement('canvas');
+        save.width  = stylizedImage.naturalWidth;
+        save.height = stylizedImage.naturalHeight;
+        save.getContext('2d').drawImage(stylizedImage, 0, 0);
+        const link = document.createElement('a');
+        link.download = `gesture-ai-${Date.now()}.png`;
+        link.href = save.toDataURL('image/png');
+        link.click();
+
+        saveToastEl.classList.add('visible');
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => saveToastEl.classList.remove('visible'), 2000);
+    });
+
+    document.getElementById('btn-clear-result').addEventListener('click', resetAll);
+
+    // =====================================================================
+    // Event listeners
+    // =====================================================================
+    canvasEl.addEventListener('click', () => {
+        if (isStylizing) return;
+        resetAll();
+    });
+
+    // Space: chụp canvas 2D + 3D và lưu về máy (ảnh gương theo màn hình)
+    let toastTimer = null;
+    document.addEventListener('keydown', e => {
+        if (e.code !== 'Space') return;
+        e.preventDefault();
+
+        const save = document.createElement('canvas');
+        save.width  = canvasEl.width;
+        save.height = canvasEl.height;
+        const sCtx = save.getContext('2d');
+
+        // Mirror horizontal cho giống view
+        sCtx.translate(save.width, 0);
+        sCtx.scale(-1, 1);
+        sCtx.drawImage(canvasEl,    0, 0);    // lớp 2D
+        sCtx.drawImage(threeCanvas, 0, 0);    // lớp 3D đè lên
+
+        const link = document.createElement('a');
+        link.download = `gesture-ar-${Date.now()}.png`;
+        link.href = save.toDataURL('image/png');
+        link.click();
+
+        saveToastEl.classList.add('visible');
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => saveToastEl.classList.remove('visible'), 2000);
+    });
+
+    // =====================================================================
+    // Đường bao gesture (giữ nguyên từ phiên bản gốc)
+    // =====================================================================
+    function buildPath(glass) {
+        ctx.beginPath();
+        if (glass.type === 'triangle') {
+            ctx.moveTo(glass.p1.x, glass.p1.y);
+            ctx.lineTo(glass.p2.x, glass.p2.y);
+            ctx.lineTo(glass.p3.x, glass.p3.y);
+        } else if (glass.type === 'quad') {
+            ctx.moveTo(glass.tl.x, glass.tl.y);
+            ctx.lineTo(glass.tr.x, glass.tr.y);
+            ctx.lineTo(glass.br.x, glass.br.y);
+            ctx.lineTo(glass.bl.x, glass.bl.y);
+        } else if (glass.type === 'circle') {
+            ctx.ellipse(glass.cx, glass.cy, glass.rx, glass.ry, glass.angle, 0, Math.PI * 2);
+        }
+        ctx.closePath();
+    }
+
+    function drawGlass3D(liveImage, glass, progress) {
+        const isSnapped = progress >= 1;
+        ctx.save();
+
+        if (isSnapped) {
+            buildPath(glass);
+            ctx.save();
+            ctx.shadowColor   = 'rgba(0,0,0,0.6)';
+            ctx.shadowBlur    = 40;
+            ctx.shadowOffsetX = 18;
+            ctx.shadowOffsetY = 18;
+            ctx.fillStyle = 'black';
+            ctx.fill();
+            ctx.restore();
+        }
+
+        buildPath(glass);
+        ctx.clip();
+
+        const zoom = isSnapped ? 1.12 : 1.0;
+        ctx.translate(glass.cx, glass.cy);
+        ctx.scale(zoom, zoom);
+        ctx.translate(-glass.cx, -glass.cy);
+        ctx.drawImage(liveImage, 0, 0, canvasEl.width, canvasEl.height);
+
+        if (isSnapped) {
+            ctx.globalCompositeOperation = 'screen';
+            ctx.globalAlpha = 0.07;
+            ctx.translate(4, 0);
+            ctx.drawImage(liveImage, 0, 0, canvasEl.width, canvasEl.height);
+            ctx.translate(-8, 0);
+            ctx.globalAlpha = 0.05;
+            ctx.drawImage(liveImage, 0, 0, canvasEl.width, canvasEl.height);
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.globalAlpha = 1;
+        }
+
+        ctx.restore();
+
+        if (isSnapped) {
+            ctx.save();
+            buildPath(glass);
+            ctx.clip();
+            const shimmer = ctx.createLinearGradient(
+                glass.cx - 150, glass.cy - 150,
+                glass.cx + 150, glass.cy + 150
+            );
+            shimmer.addColorStop(0,   'rgba(180, 160, 255, 0.18)');
+            shimmer.addColorStop(0.4, 'rgba(120, 220, 255, 0.08)');
+            shimmer.addColorStop(0.7, 'rgba(255, 200, 220, 0.12)');
+            shimmer.addColorStop(1,   'rgba(160, 255, 200, 0.06)');
+            ctx.fillStyle = shimmer;
+            ctx.fill();
+            ctx.restore();
+        }
+
+        ctx.save();
+        buildPath(glass);
+
+        if (isSnapped) {
+            const bevel = ctx.createLinearGradient(
+                glass.cx - 120, glass.cy - 120,
+                glass.cx + 120, glass.cy + 120
+            );
+            bevel.addColorStop(0,    'rgba(255,255,255,0.95)');
+            bevel.addColorStop(0.45, 'rgba(255,255,255,0.15)');
+            bevel.addColorStop(1,    'rgba(180,180,180,0.55)');
+            ctx.lineWidth   = 9;
+            ctx.strokeStyle = bevel;
+            ctx.stroke();
+
+            buildPath(glass);
+            ctx.lineWidth   = 2;
+            ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+            ctx.stroke();
+        } else {
+            const t = Math.max(0, Math.min(1, progress));
+            const r = Math.round(255 - (255 - 99)  * t);
+            const g = Math.round(255 - (255 - 102) * t);
+            const b = Math.round(255 - (255 - 241) * t);
+            ctx.lineWidth   = 3 + 5 * t;
+            ctx.strokeStyle = `rgba(${r},${g},${b},0.85)`;
+            ctx.setLineDash([]);
+            ctx.stroke();
+        }
+        ctx.restore();
+
+        if (!isSnapped && progress > 0.05) {
+            drawProgressRing(glass, progress);
+        }
+    }
+
+    function drawProgressRing(glass, progress) {
+        ctx.save();
+
+        let cx, cy, rx, ry;
+        if (glass.type === 'circle') {
+            cx = glass.cx; cy = glass.cy;
+            rx = glass.rx * 1.25; ry = glass.ry * 1.25;
+        } else if (glass.type === 'triangle') {
+            cx = glass.cx; cy = glass.cy;
+            const pts = [glass.p1, glass.p2, glass.p3];
+            rx = ry = Math.max(...pts.map(p => Math.hypot(p.x - cx, p.y - cy))) * 1.2;
+        } else {
+            cx = glass.cx; cy = glass.cy;
+            const pts = [glass.tl, glass.tr, glass.br, glass.bl];
+            rx = ry = Math.max(...pts.map(p => Math.hypot(p.x - cx, p.y - cy))) * 1.18;
+        }
+
+        const perim   = 2 * Math.PI * Math.max(rx, ry);
+        const dashLen = perim / 24;
+        ctx.setLineDash([dashLen * 0.6, dashLen * 0.4]);
+
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+        ctx.lineWidth   = 2;
+        ctx.strokeStyle = 'rgba(99,102,241,0.25)';
+        ctx.stroke();
+
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, rx, ry, -Math.PI / 2, 0, Math.PI * 2 * progress);
+        ctx.lineWidth   = 3;
+        ctx.strokeStyle = `rgba(139,92,246,${0.5 + 0.4 * progress})`;
+        ctx.shadowColor = '#8b5cf6';
+        ctx.shadowBlur  = 8;
+        ctx.stroke();
+
+        ctx.restore();
+    }
+
+    // =====================================================================
+    // Gesture detection (giữ nguyên)
+    // =====================================================================
+    function isFingerExtended(landmarks, tipIdx, pipIdx) {
+        const wrist = landmarks[0];
+        const tip   = landmarks[tipIdx];
+        const pip   = landmarks[pipIdx];
+        return Math.hypot(tip.x - wrist.x, tip.y - wrist.y) >
+               Math.hypot(pip.x - wrist.x, pip.y - wrist.y);
+    }
+
+    function checkTriangleGesture(lm) {
+        return  isFingerExtended(lm,  4,  3) &&
+                isFingerExtended(lm,  8,  6) &&
+                isFingerExtended(lm, 12, 10) &&
+               !isFingerExtended(lm, 16, 14) &&
+               !isFingerExtended(lm, 20, 18);
+    }
+
+    function checkLFrameGesture(lm) {
+        return  isFingerExtended(lm,  4,  3)  &&
+                isFingerExtended(lm,  8,  6)  &&
+               !isFingerExtended(lm, 12, 10) &&
+               !isFingerExtended(lm, 16, 14) &&
+               !isFingerExtended(lm, 20, 18);
+    }
+
+    function checkStretchCircleGesture(h1, h2) {
+        return  isFingerExtended(h1,  4,  3) && isFingerExtended(h2,  4,  3) &&
+                isFingerExtended(h1,  8,  6) && isFingerExtended(h2,  8,  6) &&
+               !isFingerExtended(h1, 12, 10) && !isFingerExtended(h2, 12, 10) &&
+               !isFingerExtended(h1, 16, 14) && !isFingerExtended(h2, 16, 14) &&
+                isFingerExtended(h1, 20, 18) && isFingerExtended(h2, 20, 18);
+    }
+
+    function updateGestureTag(name) {
+        if (name !== lastGesture) {
+            lastGesture = name;
+            gestureTagEl.textContent = name || '';
+            gestureTagEl.classList.toggle('visible', !!name);
+        }
+    }
+
+    // =====================================================================
+    // Main loop
+    // =====================================================================
+    function onResults(results) {
+        if (!loadingEl.classList.contains('hidden')) {
+            loadingEl.classList.add('hidden');
+            setTimeout(() => { loadingEl.style.display = 'none'; }, 600);
+        }
+
+        const w = canvasEl.width  = videoEl.videoWidth  || 1280;
+        const h = canvasEl.height = videoEl.videoHeight || 720;
+
+        // PHASE 2: khi đang hiển thị ảnh AI thì dừng hoàn toàn xử lý gesture
+        if (stylizedImage) {
+            ctx.clearRect(0, 0, w, h);
+            ctx.drawImage(stylizedImage, 0, 0, w, h);
+            clearThreeLayer();
+            updateGestureTag(null);
+            return;
+        }
+
+        if (frozenCanvas.width !== w || frozenCanvas.height !== h) {
+            frozenCanvas.width = w; frozenCanvas.height = h;
+        }
+
+        let currentGestureData = null;
+        let gestureName        = null;
+
+        if (results.multiHandLandmarks?.length > 0) {
+            const hand1 = results.multiHandLandmarks[0];
+
+            if (checkTriangleGesture(hand1)) {
+                const p1 = { x: hand1[4].x  * w, y: hand1[4].y  * h };
+                const p2 = { x: hand1[8].x  * w, y: hand1[8].y  * h };
+                const p3 = { x: hand1[12].x * w, y: hand1[12].y * h };
+                currentGestureData = {
+                    type: 'triangle', p1, p2, p3,
+                    cx: (p1.x + p2.x + p3.x) / 3,
+                    cy: (p1.y + p2.y + p3.y) / 3,
+                };
+                gestureName = '🖖 TAM GIÁC → PHA LÊ';
+            }
+
+            if (results.multiHandLandmarks.length === 2) {
+                const hand2     = results.multiHandLandmarks[1];
+                const leftHand  = hand1[8].x < hand2[8].x ? hand1 : hand2;
+                const rightHand = hand1[8].x < hand2[8].x ? hand2 : hand1;
+
+                if (checkLFrameGesture(hand1) && checkLFrameGesture(hand2)) {
+                    const ex = 1.1;
+                    const tl = { x: leftHand[8].x  * w, y: leftHand[8].y  * h };
+                    const tr = { x: rightHand[8].x * w, y: rightHand[8].y * h };
+                    const br = { x: rightHand[4].x * w, y: rightHand[4].y * h };
+                    const bl = { x: leftHand[4].x  * w, y: leftHand[4].y  * h };
+                    const cx = (tl.x + tr.x + br.x + bl.x) / 4;
+                    const cy = (tl.y + tr.y + br.y + bl.y) / 4;
+                    const expand = p => ({ x: cx + (p.x - cx) * ex, y: cy + (p.y - cy) * ex });
+                    currentGestureData = { type: 'quad', tl: expand(tl), tr: expand(tr), br: expand(br), bl: expand(bl), cx, cy };
+                    gestureName = '👆 TỨ GIÁC → KHỐI 3D';
+                }
+                else if (checkStretchCircleGesture(hand1, hand2)) {
+                    const lIndex = { x: leftHand[8].x  * w, y: leftHand[8].y  * h };
+                    const rIndex = { x: rightHand[8].x * w, y: rightHand[8].y * h };
+                    const lThumb = { x: leftHand[4].x  * w, y: leftHand[4].y  * h };
+                    const rThumb = { x: rightHand[4].x * w, y: rightHand[4].y * h };
+                    const lPinky = { x: leftHand[20].x * w, y: leftHand[20].y * h };
+                    const rPinky = { x: rightHand[20].x* w, y: rightHand[20].y* h };
+                    const lAnchor = { x: (lIndex.x + lThumb.x) / 2, y: (lIndex.y + lThumb.y) / 2 };
+                    const rAnchor = { x: (rIndex.x + rThumb.x) / 2, y: (rIndex.y + rThumb.y) / 2 };
+                    const cx = (lAnchor.x + rAnchor.x) / 2;
+                    const cy = (lAnchor.y + rAnchor.y) / 2;
+                    const rx = Math.hypot(lAnchor.x - rAnchor.x, lAnchor.y - rAnchor.y) / 2 * 1.1;
+                    const pinkyMid = { x: (lPinky.x + rPinky.x) / 2, y: (lPinky.y + rPinky.y) / 2 };
+                    const ry = Math.hypot(pinkyMid.x - cx, pinkyMid.y - cy) * 1.15;
+                    const angle = Math.atan2(rAnchor.y - lAnchor.y, rAnchor.x - lAnchor.x);
+                    currentGestureData = { type: 'circle', cx, cy, rx, ry, angle, isResizable: true };
+                    gestureName = '🤙 VÒNG TRÒN → CẦU HẠT';
+                }
+            }
+        }
+
+        updateGestureTag(gestureName);
+
+        let currentProgress = 0;
+
+        if (currentGestureData) {
+            if (!isCooldown) {
+                if (frozenGlass) frozenGlass = null;
+
+                if (lastPos) {
+                    const dist = Math.hypot(lastPos.cx - currentGestureData.cx, lastPos.cy - currentGestureData.cy);
+                    if (dist < STABILITY_THRESHOLD) {
+                        if (snapTimer === 0) snapTimer = Date.now();
+                        currentProgress = (Date.now() - snapTimer) / SNAP_DELAY;
+                        if (currentProgress >= 1) {
+                            frozenGlass = currentGestureData;
+                            frozenCtx.drawImage(results.image, 0, 0, w, h);
+                            isCooldown      = true;
+                            snapTimer       = 0;
+                            currentProgress = 0;
+                            flashFrames     = 10;
+                            hudEl.classList.add('hidden');
+                            // PHASE 2: hiện panel chọn phong cách AI
+                            showStylePanel();
+                        }
+                    } else {
+                        snapTimer = 0;
+                        lastPos   = currentGestureData;
+                    }
+                } else {
+                    lastPos   = currentGestureData;
+                    snapTimer = Date.now();
+                }
+            }
+            activeGlass = currentGestureData;
+        } else {
+            activeGlass = null;
+            lastPos     = null;
+            snapTimer   = 0;
+            isCooldown  = false;
+        }
+
+        // --- Render 2D layer ---
+        ctx.clearRect(0, 0, w, h);
+
+        const usesFrozenBg = frozenGlass && !activeGlass;
+        ctx.drawImage(usesFrozenBg ? frozenCanvas : results.image, 0, 0, w, h);
+
+        if (frozenGlass && !activeGlass) {
+            drawGlass3D(results.image, frozenGlass, 1.0);
+        }
+
+        if (activeGlass && !isCooldown) {
+            drawGlass3D(results.image, activeGlass, currentProgress);
+        }
+
+        if (results.multiHandLandmarks && !frozenGlass) {
+            for (const hand of results.multiHandLandmarks) {
+                drawConnectors(ctx, hand, HAND_CONNECTIONS, { color: 'rgba(255,255,255,0.1)', lineWidth: 2 });
+                drawLandmarks(ctx, hand, { color: 'rgba(255,255,255,0.3)', lineWidth: 1, radius: 2 });
+            }
+        }
+
+        if (flashFrames > 0) {
+            ctx.fillStyle = `rgba(255,255,255,${flashFrames * 0.09})`;
+            ctx.fillRect(0, 0, w, h);
+            flashFrames--;
+        }
+
+        // --- Render 3D layer (ĐÈ LÊN 2D) ---
+        const currentGlass = activeGlass || frozenGlass;
+        const isFrozen     = !!frozenGlass && !activeGlass;
+        updateThreeGlass(currentGlass, isFrozen);
+        renderThreeLayer();
+    }
+
+    // =====================================================================
+    // MediaPipe + Camera init
+    // =====================================================================
+    const hands = new Hands({
+        locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+    });
+
+    hands.setOptions({
+        maxNumHands:            2,
+        modelComplexity:        1,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence:  0.5,
+    });
+
+    hands.onResults(onResults);
+
+    const camera = new Camera(videoEl, {
+        onFrame: async () => { await hands.send({ image: videoEl }); },
+        width:  1280,
+        height: 720,
+    });
+
+    // Khởi tạo Three.js TRƯỚC khi camera chạy
+    initThree();
+
+    camera.start().catch(err => {
+        console.error('Camera error:', err);
+        loadingEl.style.display = 'none';
+        errorEl.classList.add('visible');
+    });
+</script>
+</body>
+</html>
